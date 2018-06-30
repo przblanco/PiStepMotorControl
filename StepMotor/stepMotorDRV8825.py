@@ -1,11 +1,14 @@
 """ Control of bipolar step motor using 8825 driver
 
 Description:
-    This module implementa a class to control bipolar step motor using 8825 driver
+    This module implements a class to control bipolar step motor using 8825 driver
     Also some samples have been implemented
        "class to implement TPC/IP remote control of the motor"
         (the user can connect with hyperterminal or telnet and control trhe motor through a remote menu
        "GUI to APP"
+
+       to be used as idependent APP drv8825RunMain must be set to True,  by doeing this the
+       samples are run
         
 Author:
     Pablo Rodriguez-2018
@@ -28,6 +31,8 @@ from enum import Enum
 
 appDebug = False
 
+#
+# set to True to run the module main APP
 drv8825RunMain = False
 
 def lostStep(channel):
@@ -566,7 +571,7 @@ class motorControlTerminalServer(threading.Thread):
         self.closeSocket()
 
 #
-# si no lo estamos usando como libreria
+# if we are not using it as a library
 if (drv8825RunMain):
     #
     # create the plate control thread 
