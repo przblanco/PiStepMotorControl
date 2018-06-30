@@ -2,9 +2,11 @@
 
 Description:
     This module implementa a class to control bipolar step motor using 8825 driver
-    Also a class to implement TPC/IP remote control of the control class have been implemeted,
-    the user can connect with hyperterminal or telnet and control trhe motor thotug a remote menu
-    
+    Also some samples have been implemented
+       "class to implement TPC/IP remote control of the motor"
+        (the user can connect with hyperterminal or telnet and control trhe motor through a remote menu
+       "GUI to APP"
+        
 Author:
     Pablo Rodriguez-2018
     
@@ -26,6 +28,8 @@ from enum import Enum
 
 appDebug = False
 
+drv8825RunMain = False
+
 def lostStep(channel):
     print("lostStep" )
 
@@ -33,25 +37,48 @@ def lostStep(channel):
 class stepMotorDriver8825(threading.Thread):
     """ Class to control  step motor movements using a 8825 driver """
     #
-    # defult tag plate position respct the reader (the attack angle from the TAG)
+    # defult tag plate position respect the reader (the attack angle from the TAG)
     DEFAULT_PLATE_POSITION = 90
+
     #
-    # step motor min resolution degres
-    #STEP_RESOLUTION = 360 / (200)
-    STEP_RESOLUTION = 360 / (200 *  32)
+    # DRV8825 microstep configurations
+    MICROSTEP_RELATION_1 = 0
+    MICROSTEP_RELATION_2  = 1
+    MICROSTEP_RELATION_4  = 2
+    MICROSTEP_RELATION_8  = 3
+    MICROSTEP_RELATION_16  = 4
+    MICROSTEP_RELATION_32  = 5
     
+    #
+    # holds the pins to use to set microstep configuration of DRV8825
+    MICROSTEP_PINS  = [14,15,18]
+
+    #
+    # holds the values to use for each microstep configuration of the DRV8825
+    # as well as the  step mode: full-step, 1/2-step, 1/4-step, 1/8-step, 1/16-step, 1/32
+    MICROSTEP_PINS_SETUP  = [[0,0,0,1,100],[0,0,1,2,100*2],[0,1,0,4,100*4],[0,1,1,8,100*8],[1,0,0,16,100*16],[1,0,1,32,100*32],[1,1,0,32,100*32],[1,1,1,32,100*32]]
+
+    #
+    # microstrep relation
+    currMicrostepCfg =   None
+   
     
+    #
+    # how many degress in each motor step
+    # i.e: stepResolution = 360 / (200) when relsoltion is full
+    stepResolution = None
+        
     #
     # step motor frequency in pigiod   17        16     15      14      13      12  11  10      9
     #                                                   (8000  4000  2000 1600 1000  800  500  400  320)
     #                                                       8           7       6       5       4       3       2   1       0
     #                                                   (250       200    160   100    80     50     40  20     10 )
-    STEP_MOTOR_FREQ =  2000
+    stepMotorFreq =  200
     
         
     #
     # back direction
-    MOVE_BACK = 0
+    MOVE_BACKWARD = 0
     #
     # forward direction
     MOVE_FORWARD = 1
@@ -66,12 +93,20 @@ class stepMotorDriver8825(threading.Thread):
     referencePIN = 16
 
     #
+    # pint to count steps
+    stepCountPin = 4
+
+    #
     # if the plate is currently in movement, if it is, we can not demand a new movement until the current is ended
     inMovement = False
 
     #
     # we are looking for reference
     lookingForReference = False
+
+    #
+    # we are moven to a predefined possition
+    moveToDemanded = False
 
     #
     # step movements pending to be executed
@@ -97,19 +132,16 @@ class stepMotorDriver8825(threading.Thread):
     # access to GPIO
     gpioControl = pigpio.pi()
 
-
-    
-    #def stepDetection(self,channel):
     def stepDetection(self,g,b,t):
         """ on each step detected we decrement the number of pending movements """
         self.pendingMovements = self.pendingMovements - 1
         if (self.updatePosition):
             #
             # update curr plate position
-            if (self.moveDirection == self.MOVE_BACK):
-                self.currPlatePosition = self.currPlatePosition - self.STEP_RESOLUTION
+            if (self.moveDirection == self.MOVE_BACKWARD):
+                self.currPlatePosition = self.currPlatePosition - self.stepResolution
             else:
-                self.currPlatePosition = self.currPlatePosition + self.STEP_RESOLUTION
+                self.currPlatePosition = self.currPlatePosition + self.stepResolution
         
     
     #
@@ -119,6 +151,29 @@ class stepMotorDriver8825(threading.Thread):
         threading.Thread.__init__(self)
         self.setupPins()
         self.start()
+
+    def setMicrostepCfg(self,microstepCfg):
+        """ set the DRV8825 microstep configuration"""
+        if (not self.inMovement):
+            #
+            # check it  is a valid configuration
+            if (microstepCfg >= self.MICROSTEP_RELATION_1 and microstepCfg <= self.MICROSTEP_RELATION_32):
+
+                self.currMicrostepCfg =  microstepCfg
+                #
+                # set pins values
+                GPIO.output(self.MICROSTEP_PINS[0],self.MICROSTEP_PINS_SETUP[self.currMicrostepCfg][0])
+                GPIO.output(self.MICROSTEP_PINS[1],self.MICROSTEP_PINS_SETUP[self.currMicrostepCfg][1])
+                GPIO.output(self.MICROSTEP_PINS[2],self.MICROSTEP_PINS_SETUP[self.currMicrostepCfg][2])
+
+                #
+                # adjust resolution (numer of sdegres in each step)
+                self.stepResolution= 360 / (200 *  self.MICROSTEP_PINS_SETUP[self.currMicrostepCfg][3])
+
+                #
+                # set frequency to defult value for the resolution
+                self.stepMotorFreq = self.MICROSTEP_PINS_SETUP[self.currMicrostepCfg][4]
+    
 
     #
     #  setup board pins
@@ -133,19 +188,15 @@ class stepMotorDriver8825(threading.Thread):
         self.stepPin = 21
         self.dirPin = 20
 
-        
-
         if (not self.gpioControl.connected):
             print ("pigiod connection error")
 
         self.gpioControl.set_mode(self.stepPin,pigpio.OUTPUT)
-        self.gpioControl.set_PWM_frequency(self.stepPin,self.STEP_MOTOR_FREQ)
-
+        self.gpioControl.set_PWM_frequency(self.stepPin,self.stepMotorFreq)
         #
         # step detection
-        GPIO.setup(4, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
-        #GPIO.add_event_detect(4, GPIO.RISING, callback=self.stepDetection)
-        self.gpioControl.callback(4,pigpio.RISING_EDGE,self.stepDetection)
+        GPIO.setup(self.stepCountPin, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+        self.gpioControl.callback(self.stepCountPin,pigpio.RISING_EDGE,self.stepDetection)
         
         GPIO.setup(self.dirPin,GPIO.OUT)
         GPIO.output(self.dirPin,self.moveDirection)
@@ -153,10 +204,20 @@ class stepMotorDriver8825(threading.Thread):
         #
         # set reference pin as input
         GPIO.setup(self.referencePIN,GPIO.IN,GPIO.PUD_DOWN)
+
+        #
+        # setup microstep control pins as output
+        GPIO.setup(self.MICROSTEP_PINS[0],GPIO.OUT)
+        GPIO.setup(self.MICROSTEP_PINS[1],GPIO.OUT)
+        GPIO.setup(self.MICROSTEP_PINS[2],GPIO.OUT)
+
+        #
+        # by default max resolution (more steps and minimum vibration
+        self.setMicrostepCfg(self.MICROSTEP_RELATION_32)
+
     
-    #
-    #  look for the plate initial posiition (DEFAULT_PLATE_POSITION)
     def lookForReference(self):
+        """look for the plate initial posiition (DEFAULT_PLATE_POSITION)"""
         #
         # by default we return that the movement is not possible
         retVal = False
@@ -173,16 +234,43 @@ class stepMotorDriver8825(threading.Thread):
             self.gpioControl.set_PWM_dutycycle(self.stepPin,128)
                     
         return retVal
-            
-        
+
+    def getCurrRPM(self):
+        """ return curr RPM of the motor """
+        return (self.stepResolution*self.stepMotorFreq*60)/360           
+
     def getCurrPlatePosition(self):
         """ return curr plate position """
         return self.currPlatePosition
 
+    def getCurrMicrostepCfg(self):
+        """ return curr microstep configuration """
+        return self.currMicrostepCfg
+
     def getCurrParams(self):
         """ return curr plate position and speed in string"""
-        return "Position: " +str(int( self.currPlatePosition)) + " --- Speed (RPM): " + str((self.STEP_RESOLUTION*self.STEP_MOTOR_FREQ*60)/360)
+        return "Pos: " + str(int( self.currPlatePosition)) + " --- Microstep : " + str(self.getCurrMicrostepCfg()) + "  --- Speed (RPM): " + str(self.getCurrRPM()) + " --- Freq: " + str(self.stepMotorFreq) + " --- Dir: "+str(self.moveDirection)
 
+    def startMovement(self):
+        """ just starts moving the motor with current parameters"""
+        if (not  self.inMovement):
+            print("start movement demanded")
+            self.inMovement = True
+            #
+            # update direction before start movement
+            GPIO.output(self.dirPin,self.moveDirection)
+            #
+            # update motor frequency
+            self.gpioControl.set_PWM_frequency(self.stepPin,self.stepMotorFreq)
+            #
+            # start pulses on step pin
+            self.gpioControl.set_PWM_dutycycle(self.stepPin,128)
+            
+    def stopMovement(self):
+        """ just stop moving the motor"""
+        if (self.inMovement):
+            self.gpioControl.set_PWM_dutycycle(self.stepPin,0)
+            self.inMovement = False
     
     def  moveTo(self,position):
         """ start movement of plate to demanded position"""
@@ -193,23 +281,19 @@ class stepMotorDriver8825(threading.Thread):
             retVal = True
             #
             # check if we have to move (if we are more than one step away of the desired position
-            if (abs(position - self.currPlatePosition) >= self.STEP_RESOLUTION):
+            if (abs(position - self.currPlatePosition) >= self.stepResolution):
                 #
                 #   how far how we have to move and in what direction
-                self.pendingMovements =  int(abs(position - self.currPlatePosition) /self.STEP_RESOLUTION)
+                self.pendingMovements =  int(abs(position - self.currPlatePosition) /self.stepResolution)
                 
                 if (self.currPlatePosition >  position):
-                    self.moveDirection = self.MOVE_BACK
+                    self.moveDirection = self.MOVE_BACKWARD
                 else:
                     self.moveDirection = self.MOVE_FORWARD
                 self.updatePosition = True
-                self.inMovement = True
-                #
-                # update direction before start movement
-                GPIO.output(self.dirPin,self.moveDirection)
-                #
-                # start pulses on step pin
-                self.gpioControl.set_PWM_dutycycle(self.stepPin,128)
+                self.moveToDemanded = True
+                self.startMovement()
+                
                     
         return retVal
 
@@ -217,17 +301,41 @@ class stepMotorDriver8825(threading.Thread):
         """ moves one degree or the minimum current resolution """
         destination = self.currPlatePosition + 1
         
-        if (self.STEP_RESOLUTION > 1):
-            destination = self.currPlatePosition + self.STEP_RESOLUTION + 1
+        if (self.stepResolution > 1):
+            destination = self.currPlatePosition + self.stepResolution + 1
 
         self.moveTo(destination)
 
     def setReference(self):
-        self.gpioControl.set_PWM_dutycycle(self.stepPin,0)
+        """ marks curr possition as reference and stop movement """
+        self.stopMovement()
         self.currPlatePosition = self.DEFAULT_PLATE_POSITION
         print("reference found")
         self.lookingForReference = False
-        self.InMovement = False
+
+    def switchDirection(self):
+        """ change current motor direction """
+        if (self.moveDirection == self.MOVE_FORWARD):
+            self.moveDirection = self.MOVE_BACKWARD
+        else:
+            self.moveDirection = self.MOVE_FORWARD
+        #
+        # if we are in movement stop and re-start
+        if (self.inMovement):
+            self.stopMovement()
+            time.sleep(0.1)
+            self.startMovement()
+            
+    def changeSpeed(self, newRPM):
+        """ change the motor frequency according to the new RPM value """
+        self.stepMotorFreq = int(round((360 * newRPM)/(self.stepResolution*60)))
+        #
+        # if we are in movement stop and re-start
+        if (self.inMovement):
+            self.stopMovement()
+            time.sleep(0.01)
+            self.startMovement()
+
 
     #
     # infinite loop of the thread
@@ -237,35 +345,33 @@ class stepMotorDriver8825(threading.Thread):
             time.sleep(0.0001)
        
             #
-            # if we need to move the plate (dur to moveTo or lookForReference demmand)
+            # the motor is moving  due to lookingForReference or moveTo demand
             if (self.inMovement):
-                #
-                # Move one step
-                #self.moveOneStep(self.moveDirection,True)
                 if (self.lookingForReference):
                     if (GPIO.input(self.referencePIN) == 1):
                         #
                         # stop pulses on step pin
-                        self.gpioControl.set_PWM_dutycycle(self.stepPin,0)
+                        self.stopMovement()
                         self.currPlatePosition = self.DEFAULT_PLATE_POSITION
                         print("reference found")
                         self.lookingForReference = False
-                        self.InMovement = False
-                        
                 else:
-                    if (self.pendingMovements <= 0):
-                        self.gpioControl.set_PWM_dutycycle(self.stepPin,0)
-                        self.inMovement = False
-                    count = count + 1
-                    if (count % 100 == 0):
-                        if (appDebug):
-                            print("curr position:", int(self.currPlatePosition) , " - In movement: ", self.inMovement, " - Pending steps: ", self.pendingMovements)
+                    if (self.moveToDemanded):
+                        if (self.pendingMovements <= 0):
+                            self.stopMovement()
+                            self.updatePosition = False
+                            self.moveToDemanded = False
+                            
+                        count = count + 1
+                        if (count % 100 == 0):
+                            if (appDebug):
+                                print("curr position:", int(self.currPlatePosition) , " - In movement: ", self.inMovement, " - Pending steps: ", self.pendingMovements)
 
     #
     # collaboative method to terminale
     def terminate(self):
         #
-        # start pulses on step pin and close connection
+        # stop pulses on step pin and close connection
         self.gpioControl.set_PWM_dutycycle(self.stepPin,0)
         self.gpioControl.stop()
                 
@@ -292,8 +398,15 @@ class motorControlTerminalConnection(threading.Thread):
             self.sock.send("                 5.-  Move to  180\r\n".encode())
             self.sock.send("\r\n".encode())
             self.sock.send("                 F.-  Fix\r\n".encode())
-            self.sock.send("                 S.-  Search\r\n".encode())
-            self.sock.send("                 A.-  Advance\r\n".encode())
+            self.sock.send("                 R.-  Search reference\r\n".encode())
+            self.sock.send("                 A.-  Advance One step\r\n".encode())
+            self.sock.send("\r\n".encode())
+            self.sock.send("                 S.-  Start\r\n".encode())
+            self.sock.send("                 H.-  Halt\r\n".encode())
+            self.sock.send("\r\n".encode())
+            self.sock.send("                 D.-  Change Direction\r\n".encode())
+            self.sock.send("                 +.-  Increase Speed \r\n".encode())
+            self.sock.send("                  -.-  Decrease Speed \r\n".encode())
             self.sock.send("\r\n".encode())
             self.sock.send("                 0.-  Close connection\r\n".encode())
             self.sock.send("\r\n".encode())
@@ -350,10 +463,30 @@ class motorControlTerminalConnection(threading.Thread):
                         self.motorControl.moveTo(135)
                     if (data[0] == "5"):
                         self.motorControl.moveTo(180)
-                    if (data[0] == "S" or data[0] == "s"):
+                    if (data[0] == "R" or data[0] == "r"):
                         self.motorControl.lookForReference()
                     if (data[0] == "A" or data[0] == "a"):
                         self.motorControl.advanceOneDegree()
+                    if (data[0] == "S" or data[0] == "s"):
+                        self.motorControl.startMovement()
+                    if (data[0] == "H" or data[0] == "h"):
+                        self.motorControl.stopMovement()
+                    if (data[0] == "D" or data[0] == "d"):
+                        self.motorControl.switchDirection()
+                    if (data[0] == "+"):
+                        #
+                        # maximun of 44-45 RPM
+                        if (self.motorControl.getCurrRPM() < 44):
+                            newRPM = int(round(self.motorControl.getCurrRPM())) + 1
+                            self.motorControl.changeSpeed(newRPM)
+                    if (data[0] == "-"):
+                        #
+                        # minimum of 1-2 RPM
+                        if (self.motorControl.getCurrRPM() > 2):
+                            newRPM = int(round(self.motorControl.getCurrRPM())) - 1
+                            self.motorControl.changeSpeed(newRPM)
+                    
+                        
 
                     self.showMenu();
                     
@@ -377,17 +510,18 @@ class motorControlTerminalServer(threading.Thread):
           process command to control de step motor """
     
     loop_active = True
+    
+    client = None
+    motorControl = None
     TCP_IP = '0.0.0.0'
     TCP_PORT = 12345
     BUFFER_SIZE = 1024  # Normally 1024, but we want fast response
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind((TCP_IP, TCP_PORT))
-    s.listen(1)
-    client = None
-    motorControl = None
 
     def __init__(self, motorControl):
+        self.s.bind((self.TCP_IP, self.TCP_PORT))
+        self.s.listen(1)
         self.motorControl= motorControl
         self.loop_active = True
         threading.Thread.__init__(self)
@@ -430,83 +564,86 @@ class motorControlTerminalServer(threading.Thread):
             print ("Unhandle terminating ControlTerminal")
 
         self.closeSocket()
+
+#
+# si no lo estamos usando como libreria
+if (drv8825RunMain):
+    #
+    # create the plate control thread 
+    motor_control = stepMotorDriver8825()
+
+    #
+    # create TCP-IP server to build remote control connections
+    control_terminal = motorControlTerminalServer(motor_control)
+
+    #
+    # create GUI
+    win = Tk()
+    winFont = font.Font(family="Helvetica", size = 15, weight = "bold")
+       
+
+    def exitProgram():
+        print("Exit button pressed!")
+        win.destroy()
+
+    def goToPosition():
+        print("demand of plate movement")
+        motor_control.moveTo(positionScale.get())
+
+    def goToListPosition():
+        print("demand of plate movement")
+        angle = float(posList.get(ACTIVE))
+        motor_control.moveTo(int(angle))
+        positionScale.set(int(angle))
+
+    def setRefPosition():
+        print("Set ref ")
+        motor_control.setReference()
+
         
-#
-# create the plate control thread 
-motor_control = stepMotorDriver8825()
 
-#
-# create TCP-IP server to build remote control connections
-control_terminal = motorControlTerminalServer(motor_control)
-
-#
-# create GUI
-win = Tk()
-winFont = font.Font(family="Helvetica", size = 15, weight = "bold")
-   
-
-def exitProgram():
-    print("Exit button pressed!")
-    win.destroy()
-
-def goToPosition():
-    print("demand of plate movement")
-    motor_control.moveTo(positionScale.get())
-
-def goToListPosition():
-    print("demand of plate movement")
-    angle = float(posList.get(ACTIVE))
-    motor_control.moveTo(int(angle))
-    positionScale.set(int(angle))
-
-def setRefPosition():
-    print("Set ref ")
-    motor_control.setReference()
-
-    
-
-win.title("UHF TAG test setup - plate management V1.0")
-win.geometry("800x400+0+0")
+    win.title("UHF TAG test setup - plate management V1.0")
+    win.geometry("800x400+0+0")
 
 
-exitButton = Button(win, text = "Exit",  font = winFont , command = exitProgram, height = 2, width = 6)
-exitButton.pack(side=BOTTOM)
+    exitButton = Button(win, text = "Exit",  font = winFont , command = exitProgram, height = 2, width = 6)
+    exitButton.pack(side=BOTTOM)
 
-setRefButton = Button(win, text = "Fix as reference",  font = winFont , command = setRefPosition, height = 2, width = 14)
-setRefButton.pack(side=LEFT)
-
-
-positionScale = Scale(win, from_=0, to=360, length =  400, font = winFont,  orient=HORIZONTAL)
-positionScale.pack()
-positionScale.set(motor_control.currPlatePosition)
-
-setPosButton = Button(win, text = "Go Scale position",  font = winFont , command = goToPosition, height = 2, width = 14)
-setPosButton.pack()
-
-posList = Listbox(win)
-posList.pack()
-
-for item in ["0", "45", "90", "135","180"]:
-    posList.insert(END, item)
-
-#
-# init list
-posList.selection_set( first = 0 )
-
-setPosListButton = Button(win, text = "Go to List position",  font = winFont , command = goToListPosition, height = 2, width = 14)
-setPosListButton.pack()
+    setRefButton = Button(win, text = "Fix as reference",  font = winFont , command = setRefPosition, height = 2, width = 14)
+    setRefButton.pack(side=LEFT)
 
 
-#
-# capture window events
-win.mainloop()
+    positionScale = Scale(win, from_=0, to=360, length =  400, font = winFont,  orient=HORIZONTAL)
+    positionScale.pack()
+    positionScale.set(motor_control.currPlatePosition)
+
+    setPosButton = Button(win, text = "Go Scale position",  font = winFont , command = goToPosition, height = 2, width = 14)
+    setPosButton.pack()
+
+    posList = Listbox(win)
+    posList.pack()
+
+    for item in ["0", "45", "90", "135","180"]:
+        posList.insert(END, item)
+
+    #
+    # init list
+    posList.selection_set( first = 0 )
+
+    setPosListButton = Button(win, text = "Go to List position",  font = winFont , command = goToListPosition, height = 2, width = 14)
+    setPosListButton.pack()
 
 
-#
-# kill plate control terminal
-control_terminal.terminate()
+    #
+    # capture window events
+    win.mainloop()
 
-#
-# kill  plate control thread
-motor_control.terminate()
+
+    #
+    # kill plate control terminal
+    control_terminal.terminate()
+
+    #
+    # kill  plate control thread
+    motor_control.terminate()
 
