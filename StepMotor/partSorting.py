@@ -4,8 +4,8 @@ Description:
     The behavior of the station is managed through a TCP-IP connection on port 12345
 
     * When the sation starts it moves the platform until "origin" is found
-    * When a part is placed on the station the control PC receives a "N<cr><lf>" message,
-    the message is repeated each 3" until "OK<cr><lf>" is returned or the part is removed
+    * The PC can issue the command "?<cr>><lf>" to chek if a part is present, the station will answer
+    with "Y<cr><lf>" or "N<cr><lf>" depending if a part is present or not
     * The PC checks the parts:
        * if part is accepted the control PC sends a "A<cr><lf>" message, the station moves
        the motor in ACEPTATION_DIR until the platform returns to "origin". In this moment the station
@@ -31,7 +31,7 @@ Description:
        * "H<cr><lf>"  A menu with the opions and current cfg is shown
        * "C<cr><lf>" to close the connection
 
-       Incorrect commands are answered with "<KO><cr><lf>"
+       Incorrect commands are answered with "KO<cr><lf>"
         
 Author:
     Pablo Rodriguez-2018-06-30
@@ -52,6 +52,10 @@ class partSortingTerminalConnection(threading.Thread):
     loop_active = True
     sock = None
     motorControl = None
+    inOrigin = None
+    partDetectionPin = None
+    
+    
     #
     # direction accept and reject parts
     acceptDirection = None
@@ -65,6 +69,7 @@ class partSortingTerminalConnection(threading.Thread):
             self.sock.send("\r\n".encode())
             self.sock.send("                 A.-  Accept part\r\n".encode())
             self.sock.send("                 R.-  Reject part\r\n".encode())
+            self.sock.send("                 ?.-  Is part present or not\r\n".encode())
             self.sock.send("\r\n".encode())
             self.sock.send("                 D.-  Change Direction of part aceptation\r\n".encode())
             self.sock.send("                 +.-  Increase Speed \r\n".encode())
@@ -87,18 +92,34 @@ class partSortingTerminalConnection(threading.Thread):
             self.sock.send("               Type option and press [Enter]:".encode())
         except:
             print("Connection, error refreshing menu")
-        
 
+
+    def detectedOrigin(self,channel):
+        self.inOrigin  = True
+
+    
     def __init__(self,s=None, motorControl = None, acceptDirection = None):
         self.sock = s
         self.sock.settimeout(0.2) # timeout for listening
         self.motorControl = motorControl
         self.acceptDirection = acceptDirection
         #
+        # setup de part detection pin
+        self.partDetectionPin = 12
+        GPIO.setup(self.partDetectionPin, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+        
+        #
         # calculate reject direction in base to accept direction value
         self.rejectDirection = 1
         if (acceptDirection == 1):
             self.rejectDirection = 0
+
+        self.inOrigin = False
+        
+        #
+        # capture motor_control referencePin RISING events to start/stop the motor
+        GPIO.add_event_detect(motorControl.referencePIN,GPIO.RISING,callback=self.detectedOrigin)
+    
         
         self.loop_active = True
         threading.Thread.__init__(self)
@@ -116,14 +137,48 @@ class partSortingTerminalConnection(threading.Thread):
     
     def waitOrigin(self):
         """ waits until origin is found """
-        time.sleep(1)
-    
-    
+        #
+        # wait 200 ms
+        time.sleep(0.2)
+        self.inOrigin = False
 
+        while (not self.inOrigin):
+            time.sleep(0.01)
+            
+    def isPartPresent(self):
+        """ check if a part is present a small filter of 0.2 s is used"""
+        retVal = False
+
+        if (GPIO.input(self.partDetectionPin) == 1):
+            time.sleep(0.2)
+            if (GPIO.input(self.partDetectionPin) == 1):
+                retVal = True
+
+        return retVal
+
+    def searchOrigin(self):
+        """ similates a rejection to search the origin"""
+        self.motorControl.moveDirection = int(self.rejectDirection)
+        self.motorControl.startMovement()
+        self.waitOrigin()
+        #
+        # after the origin is found we clean PC input buffer
+        try:
+            data = self.sock.recv(1024).decode()
+        except socket.timeout:
+            pass
+        except:
+            print ("unhandle exception in connection")
+            self.terminate()
+   
     def run(self):
         #
         # if an answer has to be sent back
         sendAnswer = False
+        #
+        # search origin
+        self.searchOrigin()
+        
         while self.loop_active:
             try:
                 data = self.sock.recv(1024).decode()
@@ -142,7 +197,6 @@ class partSortingTerminalConnection(threading.Thread):
                        #
                        # the connection sockect is closed,we can't answer
                        sendAnswer = False
-                       
                        
                        
                     if (data[0] == "S" or data[0] == "s"):
@@ -165,21 +219,30 @@ class partSortingTerminalConnection(threading.Thread):
                     #
                     # part is accepted
                     if (data[0] == "A" or data[0] == "a"):
-                        self.motorControl.moveDirection = self.acceptDirection
+                        self.motorControl.moveDirection = int(self.acceptDirection)
                         self.motorControl.startMovement()
                         self.waitOrigin()
                         self.motorControl.stopMovement()
                         answerOK = True
-                        
 
                     #
                     # reject movement
                     if (data[0] == "R" or data[0] == "r"):
-                        self.motorControl.moveDirection = self.rejectDirection
+                        self.motorControl.moveDirection = int(self.rejectDirection)
                         self.motorControl.startMovement()
                         self.waitOrigin()
                         self.motorControl.stopMovement()
                         answerOK = True
+
+                    #
+                    # reject movement
+                    if (data[0] == "?"):
+                        if (self.isPartPresent()):
+                            self.sock.send("Y\r\n".encode())
+                            sendAnswer = False
+                        else:
+                            self.sock.send("N\r\n".encode())
+                            sendAnswer = False
 
                     #
                     # switch acceptance direction
@@ -236,7 +299,7 @@ class partSortingTerminalConnection(threading.Thread):
                             self.motorControl.changeSpeed(newRPM)
                         answerOK = True
 
-                                        #
+                    #
                     # show help menu
                     if (data[0] == "H" or data[0] == "h"):
                         self.showMenu();
@@ -256,6 +319,7 @@ class partSortingTerminalConnection(threading.Thread):
     def terminate(self):
         self.loop_active = False
         try:
+            GPIO.remove_event_detect(self.motorControl.referencePIN)
             self.sock.send("\r\n".encode())
             self.sock.send("Connection Closed\r\n".encode())
             self.sock.send("\r\n".encode())
@@ -331,7 +395,7 @@ class partSortingTerminalServer(threading.Thread):
     # collaboative method to terminale
     def terminate(self):
         self.loop_active = False
-        try:
+        try:           
             if (not self.client == None):
                 print ("Finishing client ...")
                 self.client.terminate()
@@ -381,7 +445,7 @@ def helicopterStartStop(channel):
 
 #
 # create TCP-IP server to build remote control connections
-control_terminal = partSortingTerminalServer(motor_control,acceptDirection)
+control_terminal = partSortingTerminalServer(motor_control,int(acceptDirection))
 
 
 while (control_terminal.isActive()):
