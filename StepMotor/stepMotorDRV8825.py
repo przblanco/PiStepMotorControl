@@ -78,6 +78,7 @@ class stepMotorDriver8825(threading.Thread):
     #                                                   (8000  4000  2000 1600 1000  800  500  400  320)
     #                                                       8           7       6       5       4       3       2   1       0
     #                                                   (250       200    160   100    80     50     40  20     10 )
+    availableFreq = [10,20,40,50,80,100,160,200,250,320,400,500,800,1000,1600,2000,4000,8000]
     stepMotorFreq =  200
     
         
@@ -120,6 +121,13 @@ class stepMotorDriver8825(threading.Thread):
     #
     # direction of the current movement in execution
     moveDirection = MOVE_FORWARD
+
+    #
+    # start with ramp-up
+    rampUp = True
+    #
+    # frequency reference according to  available frequ array
+    currFreqReference = 0
 
     #
     # pin used to produce steps, a generate square wave is used
@@ -265,16 +273,57 @@ class stepMotorDriver8825(threading.Thread):
             # update direction before start movement
             GPIO.output(self.dirPin,self.moveDirection)
             #
-            # update motor frequency
-            self.gpioControl.set_PWM_frequency(self.stepPin,self.stepMotorFreq)
-            #
-            # start pulses on step pin
-            self.gpioControl.set_PWM_dutycycle(self.stepPin,128)
+            # if we want the motor to peform a RAMP up
+            if (self.rampUp):
+                currPos = 0
+                freqReached = False
+                #
+                # set minimum freq
+                self.gpioControl.set_PWM_frequency(self.stepPin,self.availableFreq[currPos])
+                #
+                # start pulses on step pin
+                self.gpioControl.set_PWM_dutycycle(self.stepPin,128)
+                
+                #
+                # change freq until we reach the desired one
+                while  not freqReached and (currPos < len(self.availableFreq)):
+                    freqReached = self.availableFreq[currPos] >= self.stepMotorFreq
+                    self.gpioControl.set_PWM_frequency(self.stepPin,self.availableFreq[currPos])
+                    self.currFreqReference = currPos
+                    currPos = currPos + 1
+                    time.sleep(0.010)
+
+            else:
+                #
+                # update motor frequency
+                self.gpioControl.set_PWM_frequency(self.stepPin,self.stepMotorFreq)
+                #
+                # start pulses on step pin
+                self.gpioControl.set_PWM_dutycycle(self.stepPin,128)
             
     def stopMovement(self):
         """ just stop moving the motor"""
+        
         if (self.inMovement):
-            self.gpioControl.set_PWM_dutycycle(self.stepPin,0)
+            #
+            # if we want the motor to peform a RAMP up/RAMP Down
+            if (self.rampUp):
+                currPos = self.currFreqReference
+                while   (currPos > 0):
+                    currPos = currPos - 1
+                    self.gpioControl.set_PWM_frequency(self.stepPin,self.availableFreq[currPos])
+                    #
+                    # invert direction  in the last step
+                    if (currPos == 0):
+                        revDir = 0
+                        if (self.moveDirection == 0):
+                            revDir = 1
+                        GPIO.output(self.dirPin,revDir)
+                        
+                    time.sleep(0.010)
+                self.gpioControl.set_PWM_dutycycle(self.stepPin,0)
+            else:
+                self.gpioControl.set_PWM_dutycycle(self.stepPin,0)
             self.inMovement = False
     
     def  moveTo(self,position):

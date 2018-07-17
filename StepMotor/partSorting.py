@@ -96,11 +96,12 @@ class partSortingTerminalConnection(threading.Thread):
 
     def detectedOrigin(self,channel):
         self.inOrigin  = True
+      
 
     
     def __init__(self,s=None, motorControl = None, acceptDirection = None):
         self.sock = s
-        self.sock.settimeout(0.2) # timeout for listening
+        self.sock.settimeout(0.001) # timeout for listening
         self.motorControl = motorControl
         self.acceptDirection = acceptDirection
         #
@@ -136,14 +137,24 @@ class partSortingTerminalConnection(threading.Thread):
             print("error closing connetion socket")
     
     def waitOrigin(self):
+        somethingArrives = False
         """ waits until origin is found """
         #
         # wait 200 ms
         time.sleep(0.2)
         self.inOrigin = False
 
-        while (not self.inOrigin):
-            time.sleep(0.01)
+        while (not self.inOrigin) and not somethingArrives:
+            #
+            # if something is received we stop
+            try:
+                data = self.sock.recv(1024).decode()
+                somethingArrives = True
+            except socket.timeout:
+                pass
+            except:
+                print ("unhandle exception in connection")
+                self.terminate()
             
     def isPartPresent(self):
         """ check if a part is present a small filter of 0.2 s is used"""
@@ -177,7 +188,7 @@ class partSortingTerminalConnection(threading.Thread):
         sendAnswer = False
         #
         # search origin
-        self.searchOrigin()
+        #self.searchOrigin()
         
         while self.loop_active:
             try:
@@ -286,7 +297,7 @@ class partSortingTerminalConnection(threading.Thread):
                     if (data[0] == "+"):
                         #
                         # maximun of 44-45 RPM
-                        if (self.motorControl.getCurrRPM() < 44):
+                        if (self.motorControl.getCurrRPM() < 88):
                             newRPM = int(round(self.motorControl.getCurrRPM())) + 1
                             self.motorControl.changeSpeed(newRPM)
                         answerOK = True
@@ -309,10 +320,12 @@ class partSortingTerminalConnection(threading.Thread):
                     # in case an answer is needed
                     if (sendAnswer):
                         sendAnswer = False
+                        print ("sending answer: ", answerOK)
                         if (answerOK):
                             self.sock.send("OK\r\n".encode())
                         else:
                             self.sock.send("KO\r\n".encode())
+                        
             
     #
     # collaboative method to terminale
@@ -425,8 +438,8 @@ try:
     cfgFile.close()
 
     motor_control.moveDirection = int(acceptDirection)
-    motor_control.changeSpeed(int(speedRMP))
     motor_control.setMicrostepCfg(int(microstripCfg))
+    motor_control.changeSpeed(int(speedRMP))
 except:
     print("imposible to load cfg file, using defaults")
     acceptDirection = 1
