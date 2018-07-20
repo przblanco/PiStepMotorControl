@@ -4,32 +4,32 @@ Description:
     The behavior of the station is managed through a TCP-IP connection on port 12345
 
     * When the sation starts it moves the platform until "origin" is found
-    * The PC can issue the command "?<cr>><lf>" to chek if a part is present, the station will answer
+    * The PC can issue the command "?" to chek if a part is present, the station will answer
     with "Y<cr><lf>" or "N<cr><lf>" depending if a part is present or not
     * The PC checks the parts:
-       * if part is accepted the control PC sends a "A<cr><lf>" message, the station moves
+       * if part is accepted the control PC sends a "A" message, the station moves
        the motor in ACEPTATION_DIR until the platform returns to "origin". In this moment the station
        returns the mesage "OK<cr><lf>"
-       * if part is rejected the control PC sends a "R<cr><lf>" message, the station moves
+       * if part is rejected the control PC sends a "R" message, the station moves
        the motor in REJECTION_DIR until the platform returns to "origin". In this moment the station
        returns the mesage "OK<cr><lf>"
     * Other messages:
-       * "D<cr><lf>"  to change the part aceptation direction, the station performs a 360 round and answers with
+       * "D"  to change the part aceptation direction, the station performs a 360 round and answers with
        "OK<cr><fl>"
-       * "+<cr><lf>": increments speed, it is answered with "OK<cr><lf>"
-       * "-<cr><lf>": increments speed, it is answered with "OK<cr><lf>"
-       * "0<cr><lf>"  Set microstep full
-          "1<cr><lf>" Set microstep 1/2
-          "2<cr><lf>" Set microstep 1/4
-          "3<cr><lf>" Set resolution 1/8
-          "4<cr><lf>" Set microstep 1/16
-          "5<cr><lf>" Set microstep 1/32
+       * "+": increments speed, it is answered with "OK<cr><lf>"
+       * "-": increments speed, it is answered with "OK<cr><lf>"
+       * "0"  Set microstep full
+          "1" Set microstep 1/2
+          "2" Set microstep 1/4
+          "3" Set resolution 1/8
+          "4" Set microstep 1/16
+          "5" Set microstep 1/32
 
           All are anwered with "OK<cr><lf>"
           
-       * "S<cr><lf>" to order the station to save the configuration, the answer is "OK<cr><lf>"
-       * "H<cr><lf>"  A menu with the opions and current cfg is shown
-       * "C<cr><lf>" to close the connection
+       * "S" to order the station to save the configuration, the answer is "OK<cr><lf>"
+       * "H"  A menu with the opions and current cfg is shown
+       * "C" to close the connection
 
        Incorrect commands are answered with "KO<cr><lf>"
         
@@ -69,6 +69,7 @@ class partSortingTerminalConnection(threading.Thread):
             self.sock.send("\r\n".encode())
             self.sock.send("                 A.-  Accept part\r\n".encode())
             self.sock.send("                 R.-  Reject part\r\n".encode())
+            self.sock.send("                 E.-  End current movement\r\n".encode())
             self.sock.send("                 ?.-  Is part present or not\r\n".encode())
             self.sock.send("\r\n".encode())
             self.sock.send("                 D.-  Change Direction of part aceptation\r\n".encode())
@@ -137,19 +138,20 @@ class partSortingTerminalConnection(threading.Thread):
             print("error closing connetion socket")
     
     def waitOrigin(self):
-        somethingArrives = False
+        endDemmandArrives = False
         """ waits until origin is found """
         #
         # wait 200 ms
         time.sleep(0.2)
         self.inOrigin = False
 
-        while (not self.inOrigin) and not somethingArrives:
+        while (not self.inOrigin) and not endDemmandArrives:
             #
             # if something is received we stop
             try:
                 data = self.sock.recv(1024).decode()
-                somethingArrives = True
+                if (data[0] == "E" or data[0] == "e"):       
+                    endDemmandArrives = True
             except socket.timeout:
                 pass
             except:
