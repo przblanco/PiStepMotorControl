@@ -138,16 +138,17 @@ class partSortingTerminalConnection(threading.Thread):
             print("error closing connetion socket")
     
     def waitOrigin(self):
-        endDemmandArrives = False
         """ waits until origin is found """
+        commError = False
+        endDemmandArrives = False
         #
         # wait 200 ms
         time.sleep(0.2)
         self.inOrigin = False
 
-        while (not self.inOrigin) and not endDemmandArrives:
+        while (not self.inOrigin) and not endDemmandArrives and not commError:
             #
-            # if something is received we stop
+            # if "E" is received we stop
             try:
                 data = self.sock.recv(1024).decode()
                 if (data[0] == "E" or data[0] == "e"):       
@@ -155,6 +156,9 @@ class partSortingTerminalConnection(threading.Thread):
             except socket.timeout:
                 pass
             except:
+                #
+                # otherwise we stuck in the loop
+                commError = True
                 print ("unhandle exception in connection")
                 self.terminate()
             
@@ -334,6 +338,7 @@ class partSortingTerminalConnection(threading.Thread):
     def terminate(self):
         self.loop_active = False
         try:
+            self.motorControl.stopMovement();
             GPIO.remove_event_detect(self.motorControl.referencePIN)
             self.sock.send("\r\n".encode())
             self.sock.send("Connection Closed\r\n".encode())
@@ -473,4 +478,3 @@ control_terminal.terminate()
 #
 # kill  plate control thread
 motor_control.terminate()
-
